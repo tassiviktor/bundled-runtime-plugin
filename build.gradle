@@ -1,0 +1,36 @@
+plugins {
+    id 'java-library'
+    id 'java-gradle-plugin'
+    id 'maven-publish'
+}
+
+group = 'io.viktor'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+gradlePlugin {
+    plugins {
+        bundledRuntime {
+            id = 'io.viktor.bundled-runtime'
+            implementationClass = 'io.viktor.bundled.BundledRuntimePlugin'
+            displayName = 'Bundled Runtime Plugin'
+            description = 'Builds a runnable folder for Docker: jlink runtime + app + launcher (+zip).'
+        }
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+}
