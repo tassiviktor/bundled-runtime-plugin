@@ -16,11 +16,22 @@ java {
     targetCompatibility = JavaVersion.VERSION_17
 }
 
+dependencies {
+
+    testImplementation gradleTestKit()
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+test {
+    useJUnitPlatform()
+}
+
 gradlePlugin {
     plugins {
         bundledRuntime {
-            id = 'io.viktor.bundled-runtime'
-            implementationClass = 'io.viktor.bundled.BundledRuntimePlugin'
+            id = 'hu.tassiviktor.gradle.plugins.bundled-runtime'
+            implementationClass = 'hu.tassiviktor.gradle.plugins.bundledruntime.BundledRuntimePlugin'
             displayName = 'Bundled Runtime Plugin'
             description = 'Builds a runnable folder for Docker: jlink runtime + app + launcher (+zip).'
         }

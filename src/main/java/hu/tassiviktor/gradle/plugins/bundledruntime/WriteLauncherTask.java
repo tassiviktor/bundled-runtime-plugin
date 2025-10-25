@@ -5,69 +5,131 @@ import org.gradle.api.file.DirectoryProperty;
 import org.gradle.api.provider.Property;
 import org.gradle.api.tasks.*;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
- * Writes platform-specific launchers:
- *   <bundled>/bin/run (unix) or run.bat (windows)
- * They execute: <runtime>/bin/java -jar <app>/app.jar [args...]
+ * Writes a platform-specific launcher into {@code <bundled>/bin}.
+ * <p>
+ * The launcher contents are loaded from classpath resources instead of being hardcoded.
+ * Two templates are expected on the classpath:
+ * <ul>
+ *   <li>{@code /launchers/launcher-unix.sh}</li>
+ *   <li>{@code /launchers/launcher-windows.bat}</li>
+ * </ul>
+ * The template must contain the placeholder {@code ${FLAGS_PLACEHOLDER}}, which
+ * will be replaced at build time with the JVM flags determined by task inputs.
+ *
+ * <p>Resulting files:</p>
+ * <ul>
+ *   <li>Unix: {@code <bundled>/bin/<launcherName>} (marked executable)</li>
+ *   <li>Windows: {@code <bundled>/bin/<launcherName>.bat}</li>
+ * </ul>
+ *
+ * <p>Launchers execute:
+ * <pre>
+ *   &lt;runtime&gt;/bin/java -jar &lt;app&gt;/app.jar [args...]
+ * </pre>
+ * with optional JVM flags (e.g. {@code -XX:+ExitOnOutOfMemoryError}).</p>
  */
 public abstract class WriteLauncherTask extends DefaultTask {
 
+    private static final String PLACEHOLDER = "${FLAGS_PLACEHOLDER}";
+    private static final String RES_UNIX = "launchers/launcher-unix.sh";
+    private static final String RES_WIN = "launchers/launcher-windows.bat";
+
+    /** The launcher base name (without extension). */
     @Input
     public abstract Property<String> getLauncherName();
 
+    /** Whether to add {@code -XX:+ExitOnOutOfMemoryError} to the JVM flags. */
     @Input
     public abstract Property<Boolean> getExitOnOome();
 
+    /** The bundled root directory that contains {@code bin/}, {@code runtime/}, {@code app/}. */
     @OutputDirectory
     public abstract DirectoryProperty getBundledRoot();
 
+    /**
+     * Generates the launcher file by reading a platform-specific template from the classpath,
+     * filling in dynamic flags, and writing it to {@code <bundled>/bin}.
+     */
     @TaskAction
     public void run() {
-        File root = getBundledRoot().getAsFile().get();
-        File bin = new File(root, "bin");
-        if (!bin.mkdirs() && !bin.exists()) {
-            throw new RuntimeException("Cannot create bin dir: " + bin);
+        final Path root = getBundledRoot().getAsFile().get().toPath();
+        final Path binDir = root.resolve("bin");
+
+        try {
+            Files.createDirectories(binDir);
+        } catch (IOException e) {
+            throw new RuntimeException("Cannot create bin dir: " + binDir, e);
         }
 
-        String jvmFlags = getExitOnOome().get() ? "-XX:+ExitOnOutOfMemoryError" : "";
+        final String jvmFlags = getExitOnOome().getOrElse(Boolean.FALSE)
+                ? "-XX:+ExitOnOutOfMemoryError"
+                : "";
 
-        if (Utils.isWindows()) {
-            File bat = new File(bin, getLauncherName().get() + ".bat");
-            String content = "@echo off\r\n" +
-                    "set DIR=%~dp0\r\n" +
-                    "set RUNTIME=%DIR%..\\runtime\r\n" +
-                    "set APP=%DIR%..\\app\r\n" +
-                    "set FLAGS=" + jvmFlags + "\r\n" +
-                    "\"%RUNTIME%\\bin\\java.exe\" %FLAGS% -jar \"%APP%\\app.jar\" %*\r\n";
-            writeFile(bat, content);
-        } else {
-            File sh = new File(bin, getLauncherName().get());
-            String content = "#!/usr/bin/env bash\n" +
-                    "set -euo pipefail\n" +
-                    "DIR=\"$( cd \"$( dirname \"${BASH_SOURCE[0]}\" )\" && pwd )\"\n" +
-                    "RUNTIME=\"$DIR/../runtime\"\n" +
-                    "APP=\"$DIR/../app\"\n" +
-                    "FLAGS=\"" + jvmFlags + "\"\n" +
-                    "exec \"$RUNTIME/bin/java\" $FLAGS -jar \"$APP/app.jar\" \"$@\"\n";
-            writeFile(sh, content);
-            // make executable
-            if (!sh.setExecutable(true)) {
-                getLogger().warn("Could not mark launcher as executable: {}", sh);
+        final boolean windows = Utils.isWindows();
+        final String resource = windows ? RES_WIN : RES_UNIX;
+        final String template = readResourceAsString(resource);
+
+        if (template == null) {
+            throw new RuntimeException("Launcher template not found on classpath: " + resource);
+        }
+
+        final String filled = template.replace(PLACEHOLDER, jvmFlags);
+        final Path target = windows
+                ? binDir.resolve(getLauncherName().get() + ".bat")
+                : binDir.resolve(getLauncherName().get());
+
+        writeFile(target, filled, windows);
+
+        // mark executable on Unix
+        if (!windows) {
+            File f = target.toFile();
+            if (!f.setExecutable(true)) {
+                getLogger().warn("Could not mark launcher as executable: {}", f.getAbsolutePath());
             }
         }
 
-        getLogger().lifecycle("[writeBundledLauncher] done -> {}", bin);
+        getLogger().lifecycle("[writeBundledLauncher] done -> {}", binDir.toAbsolutePath());
     }
 
-    private static void writeFile(File f, String text) {
-        try (FileWriter w = new FileWriter(f)) {
-            w.write(text);
+    /**
+     * Loads a classpath resource as UTF-8 text.
+     *
+     * @param resourcePath path relative to the classpath root (e.g. {@code launchers/launcher-unix.sh})
+     * @return the file contents, or {@code null} if not found
+     */
+    private static String readResourceAsString(String resourcePath) {
+        ClassLoader cl = WriteLauncherTask.class.getClassLoader();
+        try (InputStream in = cl.getResourceAsStream(resourcePath)) {
+            if (in == null) return null;
+            ByteArrayOutputStream bos = new ByteArrayOutputStream(Math.max(1024, in.available()));
+            byte[] buf = new byte[8192];
+            int r;
+            while ((r = in.read(buf)) != -1) {
+                bos.write(buf, 0, r);
+            }
+            return bos.toString(StandardCharsets.UTF_8);
         } catch (IOException e) {
-            throw new RuntimeException("Failed to write file: " + f, e);
+            throw new UncheckedIOException("Failed to read resource: " + resourcePath, e);
+        }
+    }
+
+    /**
+     * Writes text to disk. On Windows we normalize line endings to CRLF; otherwise LF.
+     */
+    private static void writeFile(Path target, String content, boolean windows) {
+        try {
+            String normalized = windows
+                    ? content.replace("\r\n", "\n").replace("\n", "\r\n")
+                    : content.replace("\r\n", "\n");
+            Files.writeString(target, normalized, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to write file: " + target, e);
         }
     }
 }

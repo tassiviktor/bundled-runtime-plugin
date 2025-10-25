@@ -1,30 +1,29 @@
-NOTE: This is a WIP project. Do not use in production yet
+> **NOTE:** This is a WIP project — not production ready yet.
+
 # Bundled Runtime Gradle Plugin
 
-A Gradle plugin that builds a **fully runnable folder** for Java / Spring Boot applications.
-It produces a self-contained directory including:
+A lightweight Gradle plugin that builds a **self-contained, runnable distribution** for Java or Spring Boot applications.
 
-* a minimized **custom JRE** (via `jlink`)
-* your **application JAR**
-* **launcher scripts** (`bin/run` or `run.bat`)
-* (optionally) a **ZIP archive** ready for Docker / distribution
+It creates:
+- a minimized **custom JRE** (via `jlink`)
+- your **application JAR**
+- **launcher scripts** (`bin/run` / `run.bat`)
+- optionally, a **ZIP archive** for Docker or distribution
 
 ---
 
 ## Features
 
-✅ Automatic detection of Spring Boot (`bootJar`) vs plain Java project
-✅ Optional module auto-detection via `jdeps` (minimal runtime)
-✅ Platform launchers (Linux + Windows)
-✅ Adds `-XX:+ExitOnOutOfMemoryError` for safe fail-fast containers
-✅ Produces a ready-to-copy bundle for Docker images
-✅ Gradle 7 / 8 compatible (property API)
+- Auto-detects Spring Boot (`bootJar`) vs. plain Java (`jar`)
+- Optional module detection via `jdeps` (minimal runtime)
+- Generates platform launchers (Linux + Windows)
+- Adds `-XX:+ExitOnOutOfMemoryError` for container safety
+- Produces Docker-ready, copy-and-run bundles
+- Works with Gradle 7 and 8 (Property API)
 
 ---
 
-## Applying the Plugin
-
-Add to your **Gradle build (Groovy DSL)**:
+##  Apply the Plugin
 
 ```groovy
 plugins {
@@ -33,7 +32,7 @@ plugins {
   id 'hu.tassiviktor.gradle.plugins.bundledruntime' version '0.1.0'
 }
 
-apply plugin: 'org.springframework.boot' // if this is a Spring Boot app
+apply plugin: 'org.springframework.boot' // only if Spring Boot
 
 group = 'com.example'
 version = '1.0.0'
@@ -43,43 +42,29 @@ repositories { mavenCentral() }
 java {
   toolchain { languageVersion = JavaLanguageVersion.of(21) }
 }
-
-dependencies {
-  implementation 'org.springframework.boot:spring-boot-starter-web'
-  testImplementation 'org.springframework.boot:spring-boot-starter-test'
-}
-```
+````
 
 ---
 
-## Configuration Block
+## Configuration
 
 ```groovy
+// This is an example. No configuration required when default values match the needs
 bundledRuntime {
-  // Name of the launcher script (without extension)
-  launcherName = 'run'
-
-  // Modules to include in the jlink image (ignored if autoDetectModules = true)
-  modules = [
-      'java.base','java.sql','java.xml',
-      'java.logging','java.naming','java.management','jdk.unsupported'
+  launcherName = 'run'                // launcher name (no extension)
+  autoDetectModules = true            // run jdeps to find required modules
+  exitOnOome = true                   // add -XX:+ExitOnOutOfMemoryError
+  modules = [                         // base module set (used if autoDetectModules = false)
+    'java.base','java.sql','java.xml',
+    'java.logging','java.naming','java.management','jdk.unsupported'
   ]
-
-  // Extra jlink options
-  jlinkOptions = ['--strip-debug','--no-header-files','--no-man-pages','--compress','2']
-
-  // Automatically use bootJar when Spring Boot plugin is applied
-  detectSpringBoot = true
-
-  // Add -XX:+ExitOnOutOfMemoryError to launcher
-  exitOnOome = true
-
-  // Produce build/distributions/<name>-bundled-<ver>.zip
-  zipOutput = true
+  jlinkOptions = [                    // extra jlink options
+    '--strip-debug','--no-header-files','--no-man-pages','--compress','2'
+  ]
 }
 ```
 
-If your project is **not Spring Boot**, make sure your `jar` manifest defines a main class:
+If not a Spring Boot project, make sure your JAR declares a `Main-Class`:
 
 ```groovy
 jar {
@@ -91,10 +76,19 @@ jar {
 
 ---
 
-## Building the Bundle
+## Build Tasks
+
+| Task           | Description                                                     |
+| -------------- | --------------------------------------------------------------- |
+| `buildBundled` | Builds the app, creates jlink runtime, and writes launchers.    |
+| `zipBundled`   | Packages the bundled folder into a ZIP (`build/distributions`). |
+
+Run:
 
 ```bash
-./gradlew clean buildBundled
+./gradlew buildBundled
+# or
+./gradlew zipBundled
 ```
 
 **Output structure:**
@@ -102,17 +96,17 @@ jar {
 ```
 build/
  ├─ bundled/
- │   ├─ runtime/          # jlink-generated JRE
- │   ├─ app/app.jar       # your application
- │   ├─ bin/run           # launcher (run.bat on Windows)
- │   └─ ...               
+ │   ├─ runtime/        # jlink-generated JRE
+ │   ├─ app/app.jar     # your application
+ │   ├─ bin/run(.bat)   # launcher
+ │   └─ ...
  └─ distributions/
      └─ <name>-bundled-<version>.zip
 ```
 
 ---
 
-## Minimal Docker Example
+## Docker Example
 
 ```dockerfile
 FROM debian:stable-slim
@@ -122,54 +116,37 @@ ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75"
 CMD ["./bin/run"]
 ```
 
-This image contains only your app + a small JRE — no system JDK needed.
+---
+
+## Behavior Overview
+
+| Feature               | Description                                          |
+| --------------------- | ---------------------------------------------------- |
+| Spring Boot           | Uses `bootJar` automatically.                        |
+| Plain Java            | Uses `jar` and libraries under `/app/lib`.           |
+| Auto module detection | Uses `jdeps` to find required modules (default: on). |
+| ExitOnOome            | Adds JVM flag for fail-fast restart.                 |
 
 ---
 
-## Runtime Detection & Behavior
+## Requirements
 
-| Feature                   | Description                                                                                                                            |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| **Spring Boot projects**  | Uses `bootJar` (fat JAR).                                                                                                              |
-| **Plain Java projects**   | Uses `jar` + runtime classpath libraries under `/app/lib`.                                                                             |
-| **Auto module detection** | Optional (enabled by default). Runs `jdeps --print-module-deps` on the built artifacts to generate the minimal module set for `jlink`. |
-| **ExitOnOome**            | Adds `-XX:+ExitOnOutOfMemoryError` to launcher for container restarts.                                                                 |
-| **Zip output**            | Controlled by `zipOutput = true`.                                                                                                      |
+* JDK 17+ (Gradle daemon must run on a full JDK — `jlink` required)
+* Works with Java 17–21+
+* Compatible with Gradle 7.0–8.x
 
 ---
 
-## Important Notes
+## Troubleshooting
 
-* If you disable `bootJar` (for `bootWar` projects), the plugin falls back to the plain `jar` artifact — you must provide a valid `Main-Class`.
-* The generated runtime image depends on the modules your app uses. You can force specific modules by setting `autoDetectModules = false` and listing them manually.
-* For HTTPS/TLS, the plugin automatically includes `jdk.crypto.ec`.
-* The launcher scripts are platform-agnostic and can be used directly on any system with basic shell / cmd support.
-* Gradle daemon must run on JDK 17+ (since `jlink` requires a full JDK).
-
----
-
-## Available Tasks
-
-| Task                   | Description                                                         |
-| ---------------------- | ------------------------------------------------------------------- |
-| `prepareBundledApp`    | Builds the application JAR(s) into `build/bundled/app`.             |
-| `makeBundledRuntime`   | Runs `jdeps` (when enabled) and `jlink` to create a custom runtime. |
-| `writeBundledLauncher` | Generates platform launch scripts.                                  |
-| `zipBundled`           | Packages everything into a ZIP under `build/distributions`.         |
-| `buildBundled`         | Lifecycle task that runs all of the above.                          |
+| Problem            | Solution                                      |
+| ------------------ | --------------------------------------------- |
+| `jdeps not found`  | Ensure Gradle uses a JDK (not a JRE).         |
+| `Module not found` | Add it manually via `bundledRuntime.modules`. |
 
 ---
 
-## Troubleshooting Tips
-
-| Issue                                         | Cause / Solution                                                                                  |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `jdeps not found`                             | Ensure your Gradle toolchain points to a **JDK** (not a JRE).                                     |
-| `Module not found` in jlink                   | Add it manually to `bundledRuntime.modules`.                                                      |
-
----
-
-## License and Author
+## Author & License
 
 **Author:** [Viktor Tassi](https://github.com/tassiviktor)
 **Group ID:** `hu.tassiviktor.gradle.plugins.bundledruntime`
@@ -178,7 +155,38 @@ This image contains only your app + a small JRE — no system JDK needed.
 
 ---
 
-## Feedback & Contributions
+## Contributions
 
 Pull requests, bug reports, and feature ideas are welcome!
-This plugin is intentionally lightweight — no external dependencies beyond Gradle itself.
+The goal is simplicity — zero external dependencies, only Gradle.
+
+---
+
+## TL;DR;
+
+```markdown
+A Gradle plugin that builds a **self-contained runnable distribution** for Java and Spring Boot apps.
+
+It automatically:
+- detects whether the project is Spring Boot or plain Java
+- creates a minimized JRE via `jlink`
+- copies your app JARs and dependencies
+- generates platform launchers (`bin/run`, `run.bat`)
+- and optionally produces a ZIP archive
+
+✅ Works on Gradle 7–8  
+✅ JDK 17+ required  
+✅ Perfect for Dockerized or slim runtime images
+
+**Main tasks:**
+- `buildBundled` → builds app + jlink runtime + launchers  
+- `zipBundled` → creates a ZIP of the full bundle  
+
+**Example:**
+```groovy
+bundledRuntime {
+  autoDetectModules = true
+  launcherName = 'run'
+  exitOnOome = true
+}
+````

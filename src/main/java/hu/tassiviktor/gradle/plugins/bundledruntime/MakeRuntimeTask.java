@@ -9,73 +9,130 @@ import org.gradle.api.tasks.*;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
 import java.util.*;
+import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 
 /**
- * Runs jlink to produce a minimized runtime image:
- *   <dest>/runtime
+ * Gradle task that runs {@code jlink} to produce a minimized custom runtime image.
+ * <p>
+ * Output layout:
+ * <pre>
+ *   <destinationDir>/runtime
+ * </pre>
+ * <p>
+ * Notes:
+ * <ul>
+ *   <li>When auto-detection is enabled, the task uses {@code jdeps --print-module-deps}
+ *       on {@code app.jar} (+ {@code app/lib/*.jar} when present) to compute the minimal module set.</li>
+ *   <li>{@code jlink} dislikes existing output directories, so work is done in a temporary folder,
+ *       then atomically (or best-effort) swapped into place.</li>
+ * </ul>
  */
-// MakeRuntimeTask.java
 public abstract class MakeRuntimeTask extends DefaultTask {
 
+    /** Explicit list of modules to include when auto-detection is disabled. */
     @Input public abstract ListProperty<String> getModules();
+
+    /** Additional {@code jlink} options (passed through as-is). */
     @Input public abstract ListProperty<String> getJlinkOptions();
+
+    /** If {@code true}, compute modules with {@code jdeps}; otherwise use {@link #getModules()}. */
     @Input public abstract Property<Boolean> getAutoDetectModules();
 
-    @InputDirectory
-    public abstract DirectoryProperty getAppRoot(); // points to build/bundled/app
+    /**
+     * Hint that the application is a Spring Boot application. If not set,
+     * the task will try to detect it by peeking into {@code app.jar}.
+     */
+    @Input public abstract Property<Boolean> getSpringBootProject();
 
+    /** Points to {@code build/bundled/app} — must contain {@code app.jar} (and optionally {@code lib/}). */
+    @InputDirectory
+    public abstract DirectoryProperty getAppRoot();
+
+    /** Destination directory that will contain the {@code runtime/} folder. */
     @OutputDirectory
     public abstract DirectoryProperty getDestinationDir();
 
+    /**
+     * Task entrypoint.
+     */
     @TaskAction
     public void run() {
         Utils.ensureJava17Plus();
 
-        // 1) Kimeneti könyvtár előkészítés
-        File out = getDestinationDir().getAsFile().get();
-        if (out.exists()) deleteRecursively(out);
-        if (!out.mkdirs() && !out.exists()) {
-            throw new GradleException("Cannot create runtime output dir: " + out);
+        // --- Resolve paths ---
+        File out = getDestinationDir().getAsFile().get();   // .../build/bundled/runtime
+        File parent = out.getParentFile();                  // .../build/bundled
+        if (!parent.exists() && !parent.mkdirs()) {
+            throw new GradleException("Cannot create parent directory: " + parent);
         }
 
-        // 2) Modulok eldöntése
-        List<String> modulesToUse;
-        if (Boolean.TRUE.equals(getAutoDetectModules().get())) {
-            modulesToUse = autoDetectModules();
-        } else {
-            modulesToUse = getModules().get();
+        // jlink does not like pre-existing output dirs; use a temp directory first.
+        File tmp = new File(parent, out.getName() + ".tmp-" + UUID.randomUUID());
+        if (tmp.exists() && !safeDeleteRecursively(tmp)) {
+            throw new GradleException("Cannot clean previous temp dir: " + tmp);
         }
 
-        // 3) jlink futtatása
+        // --- Modules (auto-detect vs manual) ---
+        final boolean autodetect = Boolean.TRUE.equals(getAutoDetectModules().get());
+        final List<String> modulesToUse = autodetect ? autoDetectModules() : getModules().get();
+
+        // --- Run jlink ---
         File jlink = Utils.jlinkExecutable(getProject());
-        List<String> args = new ArrayList<>();
-        args.addAll(getJlinkOptions().get());
-        args.add("--add-modules");
-        args.add(String.join(",", modulesToUse));
-        args.add("--output");
-        args.add(out.getAbsolutePath());
+        List<String> jlinkArgs = new ArrayList<>();
+        jlinkArgs.addAll(getJlinkOptions().get());
+        jlinkArgs.add("--add-modules");
+        jlinkArgs.add(String.join(",", modulesToUse));
+        jlinkArgs.add("--output");
+        jlinkArgs.add(tmp.getAbsolutePath()); // jlink writes into the temp directory
 
-        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
-        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
-        int exit = getProject().exec(spec -> {
-            spec.setExecutable(jlink.getAbsolutePath());
-            spec.args(args);
-            spec.setStandardOutput(stdout);
-            spec.setErrorOutput(stderr);
-            spec.setIgnoreExitValue(true);
-        }).getExitValue();
+        ExecOutcome jlinkOutcome = execCapture(jlink.getAbsolutePath(), jlinkArgs);
+        if (jlinkOutcome.exit != 0) {
+            safeDeleteRecursively(tmp);
+            throw new GradleException("jlink failed (exit=" + jlinkOutcome.exit + ")\nSTDOUT:\n" +
+                    jlinkOutcome.stdout + "\nSTDERR:\n" + jlinkOutcome.stderr);
+        }
 
-        if (exit != 0) {
-            throw new GradleException("jlink failed (exit=" + exit + ")\nSTDOUT:\n" +
-                    stdout + "\nSTDERR:\n" + stderr);
+        // --- Swap temp -> final (best effort atomic replace) ---
+        if (out.exists() && !safeDeleteRecursively(out)) {
+            // Rare but possible (locked by AV etc.): fail fast and keep temp for inspection
+            safeDeleteRecursively(tmp);
+            throw new GradleException("Cannot replace existing runtime dir: " + out);
+        }
+        // Try simple rename first; on Windows/AV this may fail → fallback to copy.
+        if (!tmp.renameTo(out)) {
+            getProject().copy(c -> { c.from(tmp); c.into(out); });
+            // Clean up temp after successful copy
+            safeDeleteRecursively(tmp);
         }
 
         getLogger().lifecycle("[makeBundledRuntime] done -> {}", out);
     }
 
-    /** Runs jdeps to compute minimal module deps from app.jar (+ libs for non-Boot). */
+    /**
+     * Safe recursive delete that does not throw unless truly unavoidable.
+     * @return {@code true} if the path no longer exists afterwards.
+     */
+    private static boolean safeDeleteRecursively(File f) {
+        if (f == null || !f.exists()) return true;
+        if (f.isDirectory()) {
+            File[] kids = f.listFiles();
+            if (kids != null) {
+                for (File c : kids) {
+                    if (!safeDeleteRecursively(c)) return false;
+                }
+            }
+        }
+        return f.delete();
+    }
+
+    /**
+     * Compute a minimal set of modules using {@code jdeps --print-module-deps} on {@code app.jar}.
+     * Also adds a couple of pragmatic defaults (e.g. {@code jdk.crypto.ec}, and {@code java.desktop}
+     * for Spring Boot apps).
+     */
     private List<String> autoDetectModules() {
         File appRoot = getAppRoot().getAsFile().get();
         File appJar = new File(appRoot, "app.jar");
@@ -83,68 +140,96 @@ public abstract class MakeRuntimeTask extends DefaultTask {
             throw new GradleException("autoDetectModules: app.jar not found at " + appJar.getAbsolutePath());
         }
 
-        // Build classpath from /app/lib (if exists)
+        // Construct classpath from app/lib/*.jar if present.
+        String classpath = "";
         File libDir = new File(appRoot, "lib");
-        String cp = "";
-        if (libDir.exists() && libDir.isDirectory()) {
+        if (libDir.isDirectory()) {
             File[] jars = libDir.listFiles((dir, name) -> name.endsWith(".jar"));
             if (jars != null && jars.length > 0) {
-                cp = Arrays.stream(jars)
+                classpath = Arrays.stream(jars)
                         .map(File::getAbsolutePath)
                         .collect(Collectors.joining(File.pathSeparator));
             }
         }
 
-        // jdeps --print-module-deps
+        // Prepare jdeps call
         File jdeps = Utils.jdepsExecutable(getProject());
         List<String> args = new ArrayList<>();
         args.add("--ignore-missing-deps");
-        // multi-release a toolchain fő verziójához igazítható, de 21 kompatibilis jó default
+        // Reasonable default; can be made configurable later if needed.
         args.add("--multi-release"); args.add("21");
-        if (!cp.isEmpty()) { args.add("-cp"); args.add(cp); }
+        if (!classpath.isEmpty()) { args.add("-cp"); args.add(classpath); }
         args.add("--print-module-deps");
         args.add(appJar.getAbsolutePath());
 
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ByteArrayOutputStream err = new ByteArrayOutputStream();
-        int exit = getProject().exec(spec -> {
-            spec.setExecutable(jdeps.getAbsolutePath());
-            spec.args(args);
-            spec.setStandardOutput(out);
-            spec.setErrorOutput(err);
-            spec.setIgnoreExitValue(true);
-        }).getExitValue();
-
-        if (exit != 0) {
-            throw new GradleException("jdeps failed (exit=" + exit + ")\nSTDOUT:\n" +
-                    out + "\nSTDERR:\n" + err);
+        ExecOutcome jdepsOutcome = execCapture(jdeps.getAbsolutePath(), args);
+        if (jdepsOutcome.exit != 0) {
+            throw new GradleException("jdeps failed (exit=" + jdepsOutcome.exit + ")\nSTDOUT:\n" +
+                    jdepsOutcome.stdout + "\nSTDERR:\n" + jdepsOutcome.stderr);
         }
 
-        String line = out.toString().trim(); // comma-separated module list
+        // Parse comma-separated module list
         Set<String> modules = new LinkedHashSet<>();
+        String line = jdepsOutcome.stdout.trim();
         if (!line.isEmpty()) {
-            modules.addAll(Arrays.stream(line.split(","))
-                    .map(String::trim).filter(s -> !s.isEmpty())
-                    .collect(Collectors.toList()));
+            Arrays.stream(line.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .forEach(modules::add);
         }
 
-        // Safety add-ons (kis méret, nagy haszon):
-        //  - TLS/HTTPS gyakran igényli az EC kriptót
+        // Pragmatic defaults
         modules.add("jdk.crypto.ec");
-        //  - néha szolgáltatók miatt hasznos (pl. SPI-k): --bind-services helyett inkább modul,
-        //    de ha kell, beállíthatunk jlinkOptions közé "--bind-services"-t is.
+
+        // Spring Boot detection: property wins; otherwise inspect the JAR.
+        boolean isBoot = Boolean.TRUE.equals(getSpringBootProject().get());
+        if (!isBoot && appJar.isFile()) {
+            try (JarFile jf = new JarFile(appJar)) {
+                isBoot =
+                        jf.getEntry("org/springframework/boot/SpringApplication.class") != null ||
+                                jf.getEntry("org/springframework/boot/loader/launch/Launcher.class") != null ||
+                                jf.getEntry("org/springframework/boot/loader/JarLauncher.class") != null;
+            } catch (IOException ignored) {
+                // If unreadable, don't decide based on JAR contents.
+            }
+        }
+        if (isBoot) {
+            // Needed due to java.beans.PropertyEditorSupport usages in some Boot setups.
+            modules.add("java.desktop");
+        }
 
         getLogger().lifecycle("[autoDetectModules] {}", modules);
         return new ArrayList<>(modules);
     }
 
-    private static void deleteRecursively(File f) {
-        if (!f.exists()) return;
-        if (f.isDirectory()) {
-            for (File c : f.listFiles()) deleteRecursively(c);
-        }
-        if (!f.delete()) {
-            throw new GradleException("Failed to delete: " + f.getAbsolutePath());
+    /**
+     * Execute an external tool and capture exit code, STDOUT and STDERR.
+     */
+    private ExecOutcome execCapture(String executable, List<String> args) {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exit = getProject().exec(spec -> {
+            spec.setExecutable(executable);
+            spec.args(args);
+            spec.setStandardOutput(stdout);
+            spec.setErrorOutput(stderr);
+            spec.setIgnoreExitValue(true);
+        }).getExitValue();
+
+        return new ExecOutcome(exit, stdout.toString(), stderr.toString());
+    }
+
+    /** Tiny value object for process results. */
+    private static final class ExecOutcome {
+        final int exit;
+        final String stdout;
+        final String stderr;
+
+        ExecOutcome(int exit, String stdout, String stderr) {
+            this.exit = exit;
+            this.stdout = stdout;
+            this.stderr = stderr;
         }
     }
 }

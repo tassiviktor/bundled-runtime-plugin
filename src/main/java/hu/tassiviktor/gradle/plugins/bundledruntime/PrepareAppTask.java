@@ -4,86 +4,140 @@ import org.gradle.api.DefaultTask;
 import org.gradle.api.GradleException;
 import org.gradle.api.Task;
 import org.gradle.api.file.DirectoryProperty;
-import org.gradle.api.tasks.*;
+import org.gradle.api.tasks.OutputDirectory;
+import org.gradle.api.tasks.TaskAction;
 import org.gradle.jvm.tasks.Jar;
 
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Set;
 
 /**
- * Builds the application artifacts into a unified folder:
+ * Prepares application artifacts into a unified layout under a destination directory.
  *
- *  <dest>/app/app.jar
- *  <dest>/app/lib/*   (only for non-Boot projects)
+ * <p>Resulting structure:</p>
+ * <pre>
+ *   &lt;dest&gt;/app/app.jar
+ *   &lt;dest&gt;/app/lib/*   (only for non-Spring Boot projects)
+ * </pre>
  *
- * Spring Boot:
- *   uses bootJar (fat jar).
- * Non-Boot:
- *   uses jar + runtimeClasspath dependencies into /app/lib.
+ * <p>Behavior:</p>
+ * <ul>
+ *   <li><b>Spring Boot projects</b>: uses the {@code bootJar} task output (fat jar) as {@code app.jar}.</li>
+ *   <li><b>Non-Boot projects</b>: uses the {@code jar} task output as {@code app.jar} and copies
+ *       {@code runtimeClasspath} dependencies into {@code /app/lib}.</li>
+ * </ul>
  *
- * Note: For non-Boot jars, ensure your jar manifest has Main-Class set,
- * otherwise launching with -jar will fail.
+ * <p><b>Note:</b> For non-Boot jars, ensure the manifest specifies {@code Main-Class};
+ * otherwise launching with {@code -jar} will fail.</p>
  */
 public abstract class PrepareAppTask extends DefaultTask {
 
+    /** Destination root directory that will contain the {@code app/} subtree. */
     @OutputDirectory
     public abstract DirectoryProperty getDestinationDir();
 
+    /**
+     * Executes the preparation:
+     * <ol>
+     *   <li>Clears the destination directory.</li>
+     *   <li>Creates {@code app/} (and {@code app/lib/} when needed).</li>
+     *   <li>Copies the main jar to {@code app/app.jar}.</li>
+     *   <li>For non-Boot projects, copies {@code runtimeClasspath} dependencies to {@code app/lib/}.</li>
+     * </ol>
+     */
     @TaskAction
     public void run() {
-        File dest = getDestinationDir().getAsFile().get();
-        if (dest.exists()) deleteRecursively(dest);
-        dest.mkdirs();
+        final Path dest = getDestinationDir().getAsFile().get().toPath();
 
-        boolean spring = getProject().getPlugins().hasPlugin("org.springframework.boot");
-        if (spring) {
-            Task bootJar = getProject().getTasks().findByName("bootJar");
-            if (bootJar == null) {
-                throw new GradleException("Spring Boot detected but 'bootJar' task not found.");
-            }
-            bootJar.getActions(); // realize
-            File fat = ((Jar) bootJar).getArchiveFile().get().getAsFile();
-            getProject().copy(spec -> {
-                spec.from(fat);
-                spec.into(new File(dest, "app"));
-                spec.rename(name -> "app.jar");
-            });
+        // 1) Clean destination
+        cleanDestination(dest);
+
+        // 2) Decide flow based on Spring Boot plugin presence
+        if (isSpringBootProject()) {
+            handleSpringBoot(dest);
         } else {
-            Jar jar = (Jar) getProject().getTasks().findByName("jar");
-            if (jar == null) throw new GradleException("'jar' task not found. Apply 'java' plugin.");
-            File jarFile = jar.getArchiveFile().get().getAsFile();
-
-            File appDir = new File(dest, "app");
-            File libDir = new File(appDir, "lib");
-            appDir.mkdirs();
-            libDir.mkdirs();
-
-            getProject().copy(spec -> {
-                spec.from(jarFile);
-                spec.into(appDir);
-                spec.rename(name -> "app.jar");
-            });
-
-            var rc = getProject().getConfigurations().findByName("runtimeClasspath");
-            if (rc == null) throw new GradleException("Configuration 'runtimeClasspath' not found.");
-            var files = rc.resolve();
-            if (!files.isEmpty()) {
-                getProject().copy(spec -> {
-                    spec.from(files);
-                    spec.into(libDir);
-                });
-            }
+            handlePlainJava(dest);
         }
 
-        getLogger().lifecycle("[prepareBundledApp] done -> {}", dest);
+        getLogger().lifecycle("[prepareBundledApp] done -> {}", dest.toAbsolutePath());
     }
 
-    private static void deleteRecursively(File f) {
-        if (!f.exists()) return;
-        if (f.isDirectory()) {
-            for (File c : f.listFiles()) deleteRecursively(c);
+    // -------- Implementation details --------
+
+    private void cleanDestination(Path dest) {
+        getProject().delete(dest.toFile());
+        try {
+            Files.createDirectories(dest);
+        } catch (Exception e) {
+            throw new GradleException("Failed to create destination directory: " + dest, e);
         }
-        if (!f.delete()) {
-            throw new GradleException("Failed to delete: " + f.getAbsolutePath());
+    }
+
+    private boolean isSpringBootProject() {
+        return getProject().getPlugins().hasPlugin("org.springframework.boot");
+    }
+
+    private void handleSpringBoot(Path dest) {
+        Task bootJarTask = getProject().getTasks().findByName("bootJar");
+        if (bootJarTask == null) {
+            throw new GradleException("Spring Boot detected but 'bootJar' task not found.");
         }
+
+        // Ensure it's realized and get the archive file
+        bootJarTask.getActions();
+        File fatJar = ((Jar) bootJarTask).getArchiveFile().get().getAsFile();
+
+        Path appDir = dest.resolve("app");
+        createDir(appDir);
+
+        // copy fat jar as app.jar
+        copyRenamed(fatJar, appDir.toFile(), "app.jar");
+    }
+
+    private void handlePlainJava(Path dest) {
+        Task jarTask = getProject().getTasks().findByName("jar");
+        if (jarTask == null) {
+            throw new GradleException("'jar' task not found. Apply the 'java' plugin.");
+        }
+        File mainJar = ((Jar) jarTask).getArchiveFile().get().getAsFile();
+
+        Path appDir = dest.resolve("app");
+        Path libDir = appDir.resolve("lib");
+        createDir(appDir);
+        createDir(libDir);
+
+        // copy main jar as app.jar
+        copyRenamed(mainJar, appDir.toFile(), "app.jar");
+
+        var runtimeCp = getProject().getConfigurations().findByName("runtimeClasspath");
+        if (runtimeCp == null) {
+            throw new GradleException("Configuration 'runtimeClasspath' not found.");
+        }
+
+        Set<File> deps = runtimeCp.resolve();
+        if (!deps.isEmpty()) {
+            getProject().copy(spec -> {
+                spec.from(deps);
+                spec.into(libDir.toFile());
+            });
+        }
+    }
+
+    private void createDir(Path dir) {
+        try {
+            Files.createDirectories(dir);
+        } catch (Exception e) {
+            throw new GradleException("Failed to create directory: " + dir, e);
+        }
+    }
+
+    private void copyRenamed(File from, File intoDir, String targetName) {
+        getProject().copy(spec -> {
+            spec.from(from);
+            spec.into(intoDir);
+            spec.rename(name -> targetName);
+        });
     }
 }
