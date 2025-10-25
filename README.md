@@ -27,7 +27,7 @@ It creates:
 plugins {
   id 'java'
   id 'org.springframework.boot' version '3.3.4' apply false
-  id 'hu.tassiviktor.gradle.plugins.bundled-runtime' version '0.1.0'
+  id 'hu.tassiviktor.gradle.plugins.bundled-runtime' version '1.0.0' // Waiting for Gradle Plugin Portal approval :)
 }
 
 apply plugin: 'org.springframework.boot' // only if Spring Boot
