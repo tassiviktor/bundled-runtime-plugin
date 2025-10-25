@@ -19,7 +19,7 @@ import java.util.stream.Collectors;
  * <p>
  * Output layout:
  * <pre>
- *   <destinationDir>/runtime
+ *   &lt;destinationDir&gt;/runtime
  * </pre>
  * <p>
  * Notes:

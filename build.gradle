@@ -1,11 +1,11 @@
 plugins {
-    id 'java-library'
     id 'java-gradle-plugin'
     id 'maven-publish'
+    id 'com.gradle.plugin-publish' version '1.2.1'
 }
 
 group = 'hu.tassiviktor.gradle.plugins'
-version = '0.1.0'
+version = '1.0.0'
 
 repositories {
     mavenCentral()
@@ -28,12 +28,24 @@ test {
 }
 
 gradlePlugin {
+    website = 'https://github.com/tassiviktor/bundled-runtime-plugin'  // kötelező meta
+    vcsUrl  = 'https://github.com/tassiviktor/bundled-runtime-plugin.git'
+
     plugins {
         bundledRuntime {
             id = 'hu.tassiviktor.gradle.plugins.bundled-runtime'
             implementationClass = 'hu.tassiviktor.gradle.plugins.bundledruntime.BundledRuntimePlugin'
-            displayName = 'Bundled Runtime Plugin'
-            description = 'Builds a runnable folder for Docker: jlink runtime + app + launcher (+zip).'
+            displayName = "Bundled Runtime Plugin"
+            description = """
+Gradle plugin that builds a self-contained, Docker-ready runtime bundle for Java and Spring Boot applications.
+It automatically detects required JDK modules, creates a minimized jlink runtime image,
+packs your app JARs and launcher scripts, and optionally produces a distributable ZIP.
+Perfect for lightweight container images or standalone deployments.
+""".stripIndent().trim()
+            tags.set([
+                    "spring-boot", "spring", "jlink", "java", "runtime", "bundle",
+                    "docker", "distribution", "fatjar", "packaging", "deployment"
+            ])
         }
     }
 }
@@ -45,4 +57,8 @@ publishing {
             remove(p)
         }
     }
+}
+
+tasks.withType(Javadoc).configureEach {
+    options.addStringOption('Xdoclint:none', '-quiet')
 }

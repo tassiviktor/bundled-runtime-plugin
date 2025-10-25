@@ -15,7 +15,7 @@ import org.gradle.api.tasks.TaskContainer;
  * Exposes two primary tasks for users:
  *
  * <ul>
- *   <li><b>buildBundled</b> – Compile & package the app, detect required modules/dependencies,
+ *   <li><b>buildBundled</b> – Compile and package the app, detect required modules/dependencies,
  *       create a minimized runtime image via jlink, and write platform launchers.</li>
  *   <li><b>zipBundled</b> – Package the assembled distribution into a ZIP archive.</li>
  * </ul>
