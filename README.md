@@ -1,5 +1,3 @@
-> **NOTE:** This is a WIP project — not production ready yet.
-
 # Bundled Runtime Gradle Plugin
 
 A lightweight Gradle plugin that builds a **self-contained, runnable distribution** for Java or Spring Boot applications.
