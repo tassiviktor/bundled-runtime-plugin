@@ -76,6 +76,24 @@ public class BundledRuntimePlugin implements Plugin<Project> {
                 prepare.configure(t -> t.dependsOn(tasks.named("bootJar")))
         );
 
+        project.getPluginManager().withPlugin("org.springframework.boot", p -> {
+            project.afterEvaluate(prj -> {
+                if (Boolean.TRUE.equals(ext.getAotJvm().getOrNull())) {
+                    if (project.getTasks().findByName("bootJar") != null &&
+                            project.getTasks().findByName("processAot") != null) {
+
+                        project.getTasks().named("bootJar", task -> task.dependsOn("processAot"));
+                        // (opcionálisan: processAot -> classes)
+                        if (project.getTasks().findByName("classes") != null) {
+                            project.getTasks().named("processAot", t -> t.dependsOn("classes"));
+                        }
+                    } else {
+                        project.getLogger().warn("[bundled-runtime] AOT requested, but 'processAot' or 'bootJar' task not found. Make sure 'org.springframework.boot.aot' plugin is applied.");
+                    }
+                }
+            });
+        });
+
         // Internal: makeBundledRuntime (jlink)
         final TaskProvider<MakeRuntimeTask> jlink = tasks.register(TASK_JLINK, MakeRuntimeTask.class, t -> {
             t.getModules().set(ext.getModules());
@@ -97,7 +115,7 @@ public class BundledRuntimePlugin implements Plugin<Project> {
             t.getLauncherName().set(ext.getLauncherName());
             t.getExitOnOome().set(ext.getExitOnOome());
             t.getBundledRoot().set(bundledDir);
-
+            t.getAotJvm().set(ext.getAotJvm());
             t.dependsOn(jlink);
             t.setDescription("Generates platform launcher scripts in build/bundled/bin.");
             // Hidden (no group); orchestrated by public tasks.
