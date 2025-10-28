@@ -9,6 +9,8 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Writes a platform-specific launcher into {@code <bundled>/bin}.
@@ -48,6 +50,9 @@ public abstract class WriteLauncherTask extends DefaultTask {
     @Input
     public abstract Property<Boolean> getExitOnOome();
 
+    @Input
+    public abstract Property<Boolean> getAotJvm();
+
     /** The bundled root directory that contains {@code bin/}, {@code runtime/}, {@code app/}. */
     @OutputDirectory
     public abstract DirectoryProperty getBundledRoot();
@@ -67,9 +72,16 @@ public abstract class WriteLauncherTask extends DefaultTask {
             throw new RuntimeException("Cannot create bin dir: " + binDir, e);
         }
 
-        final String jvmFlags = getExitOnOome().getOrElse(Boolean.FALSE)
-                ? "-XX:+ExitOnOutOfMemoryError"
-                : "";
+        List<String> flags = new ArrayList<>();
+        if (Boolean.TRUE.equals(getExitOnOome().get())) {
+            flags.add("-XX:+ExitOnOutOfMemoryError");
+        }
+
+        if (Boolean.TRUE.equals(getAotJvm().get())) {
+            flags.add("-Dspring.aot.enabled=true");
+        }
+
+        String jvmFlags = String.join(" ", flags);
 
         final boolean windows = Utils.isWindows();
         final String resource = windows ? RES_WIN : RES_UNIX;

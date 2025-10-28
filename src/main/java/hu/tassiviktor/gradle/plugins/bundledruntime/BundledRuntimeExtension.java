@@ -83,6 +83,11 @@ public abstract class BundledRuntimeExtension {
      */
     public abstract Property<Boolean> getExitOnOome();
 
+    /**
+     * Enable Spring AOT on JVM (adds -Dspring.aot.enabled=true and wires processAot -> bootJar).
+     * */
+    public abstract Property<Boolean> getAotJvm();
+
     // ---- Construction & conventions -------------------------------------------------------------
 
     /**
@@ -90,9 +95,11 @@ public abstract class BundledRuntimeExtension {
      */
     @Inject
     public BundledRuntimeExtension(ObjectFactory objects) {
+
         // Booleans
         getAutoDetectModules().convention(true);
         getExitOnOome().convention(true);
+        getAotJvm().convention(false);
 
         // Strings
         getLauncherName().convention(DEFAULT_LAUNCHER_NAME);
@@ -100,6 +107,7 @@ public abstract class BundledRuntimeExtension {
         // Lists
         getModules().convention(DEFAULT_MODULES);
         getJlinkOptions().convention(DEFAULT_JLINK_OPTIONS);
+
     }
 
     // ---- Fluent helpers (optional sugar for build scripts) --------------------------------------

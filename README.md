@@ -27,6 +27,7 @@ It creates:
 plugins {
   id 'java'
   id 'org.springframework.boot' version '3.3.4' apply false
+  id 'org.springframework.boot.aot' apply false                      //Optional, for AOT support
   id 'hu.tassiviktor.gradle.plugins.bundled-runtime' version '1.0.0' // Waiting for Gradle Plugin Portal approval :)
 }
 
@@ -49,6 +50,7 @@ java {
 ```groovy
 // This is an example. No configuration required when default values match the needs
 bundledRuntime {
+  aotJvm = false                      // enable aot support (Spring boot 3.x)
   launcherName = 'run'                // launcher name (no extension)
   autoDetectModules = true            // run jdeps to find required modules
   exitOnOome = true                   // add -XX:+ExitOnOutOfMemoryError
@@ -119,11 +121,12 @@ CMD ["./bin/run"]
 ## Behavior Overview
 
 | Feature               | Description                                          |
-| --------------------- | ---------------------------------------------------- |
+|-----------------------|------------------------------------------------------|
 | Spring Boot           | Uses `bootJar` automatically.                        |
 | Plain Java            | Uses `jar` and libraries under `/app/lib`.           |
 | Auto module detection | Uses `jdeps` to find required modules (default: on). |
 | ExitOnOome            | Adds JVM flag for fail-fast restart.                 |
+| AOT support           | Enable AOT build.                                    |
 
 ---
 
