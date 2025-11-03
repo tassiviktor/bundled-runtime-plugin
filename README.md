@@ -28,7 +28,7 @@ plugins {
   id 'java'
   id 'org.springframework.boot' version '3.3.4' apply false
   id 'org.springframework.boot.aot' apply false                      //Optional, for AOT support
-  id 'hu.tassiviktor.gradle.plugins.bundled-runtime' version '1.0.1' // Waiting for Gradle Plugin Portal approval :)
+  id 'hu.tassiviktor.gradle.plugins.bundled-runtime' version '1.0.1'
 }
 
 apply plugin: 'org.springframework.boot' // only if Spring Boot
