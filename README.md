@@ -151,7 +151,7 @@ CMD ["./bin/run"]
 
 **Author:** [Viktor Tassi](https://github.com/tassiviktor)
 **Group ID:** `hu.tassiviktor.gradle.plugins.bundled-runtime`
-**Version:** `1.0.0`
+**Version:** `1.0.1`
 **License:** Public Domain
 
 ---
