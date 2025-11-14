@@ -145,7 +145,7 @@ public abstract class MakeRuntimeTask extends DefaultTask {
             throw new GradleException("autoDetectModules: app.jar not found at " + appJar.getAbsolutePath());
         }
 
-        // Construct classpath from app/lib/*.jar if present.
+        // app/lib/*.jar -> classpath
         String classpath = "";
         File libDir = new File(appRoot, "lib");
         if (libDir.isDirectory()) {
@@ -157,32 +157,41 @@ public abstract class MakeRuntimeTask extends DefaultTask {
             }
         }
 
-        // Temp dir for extracting nested JARs
         File nestedTempDir = new File(appRoot, ".jdeps-nested");
-        // Cleanup
         ModuleDetectionUtils.deleteRecursively(nestedTempDir.toPath());
 
-        List<File> nestedJars = Collections.emptyList();
         try {
-            nestedJars = ModuleDetectionUtils.extractNestedJars(appJar, nestedTempDir, getLogger());
+            List<File> nestedJars =
+                    ModuleDetectionUtils.extractNestedJars(appJar, nestedTempDir, getLogger());
+
+            // *** nested jarok csak classpath-on, nem rootként ***
+            if (!nestedJars.isEmpty()) {
+                String nestedCp = nestedJars.stream()
+                        .map(File::getAbsolutePath)
+                        .collect(Collectors.joining(File.pathSeparator));
+
+                if (!classpath.isEmpty()) {
+                    classpath = classpath + File.pathSeparator + nestedCp;
+                } else {
+                    classpath = nestedCp;
+                }
+            }
 
             File jdeps = Utils.jdepsExecutable(getProject());
             List<String> args = new ArrayList<>();
+
             args.add("--ignore-missing-deps");
-            // Reasonable default; can be made configurable later if needed.
             args.add("--multi-release");
             args.add("21");
+
             if (!classpath.isEmpty()) {
                 args.add("-cp");
                 args.add(classpath);
             }
+
             args.add("--print-module-deps");
 
-            // Walk through nested jars...
             args.add(appJar.getAbsolutePath());
-            for (File nested : nestedJars) {
-                args.add(nested.getAbsolutePath());
-            }
 
             ExecOutcome jdepsOutcome = execCapture(jdeps.getAbsolutePath(), args);
             if (jdepsOutcome.exit != 0) {
@@ -190,7 +199,6 @@ public abstract class MakeRuntimeTask extends DefaultTask {
                         jdepsOutcome.stdout + "\nSTDERR:\n" + jdepsOutcome.stderr);
             }
 
-            // Parse comma-separated module list
             Set<String> modules = new LinkedHashSet<>();
             String line = jdepsOutcome.stdout.trim();
             if (!line.isEmpty()) {
@@ -200,10 +208,8 @@ public abstract class MakeRuntimeTask extends DefaultTask {
                         .forEach(modules::add);
             }
 
-            // Pragmatic defaults
             modules.add("jdk.crypto.ec");
 
-            // Spring Boot detection: property wins; otherwise inspect the JAR.
             boolean isBoot = Boolean.TRUE.equals(getSpringBootProject().get());
             if (!isBoot && appJar.isFile()) {
                 try (JarFile jf = new JarFile(appJar)) {
@@ -212,21 +218,19 @@ public abstract class MakeRuntimeTask extends DefaultTask {
                                     jf.getEntry("org/springframework/boot/loader/launch/Launcher.class") != null ||
                                     jf.getEntry("org/springframework/boot/loader/JarLauncher.class") != null;
                 } catch (IOException ignored) {
-                    // If unreadable, don't decide based on JAR contents.
                 }
             }
             if (isBoot) {
-                // Needed due to java.beans.PropertyEditorSupport usages in some Boot setups.
                 modules.add("java.desktop");
             }
 
             getLogger().lifecycle("[autoDetectModules] {}", modules);
             return new ArrayList<>(modules);
         } finally {
-            // best-effort cleanup
             ModuleDetectionUtils.deleteRecursively(nestedTempDir.toPath());
         }
     }
+
 
 
     /**
