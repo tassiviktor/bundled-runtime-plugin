@@ -28,7 +28,7 @@ plugins {
   id 'java'
   id 'org.springframework.boot' version '3.3.4' apply false
   id 'org.springframework.boot.aot' apply false                      //Optional, for AOT support
-  id 'hu.tassiviktor.gradle.plugins.bundled-runtime' version '1.0.1'
+  id 'hu.tassiviktor.gradle.plugins.bundled-runtime' version '1.0.2'
 }
 
 apply plugin: 'org.springframework.boot' // only if Spring Boot
@@ -54,7 +54,8 @@ bundledRuntime {
   launcherName = 'run'                // launcher name (no extension)
   autoDetectModules = true            // run jdeps to find required modules
   exitOnOome = true                   // add -XX:+ExitOnOutOfMemoryError
-  modules = [                         // base module set (used if autoDetectModules = false)
+  modules = [                         // base module set (used if autoDetectModules = false). When autodetect applied, 
+                                      // these ones will be added to the dependency list.
     'java.base','java.sql','java.xml',
     'java.logging','java.naming','java.management','jdk.unsupported'
   ]
@@ -147,11 +148,17 @@ CMD ["./bin/run"]
 
 ---
 
+## Roadmap
+- Better autodetection
+- Docker support (with multiarch build)
+
+---
+
 ## Author & License
 
 **Author:** [Viktor Tassi](https://github.com/tassiviktor)
 **Group ID:** `hu.tassiviktor.gradle.plugins.bundled-runtime`
-**Version:** `1.0.1`
+**Version:** `1.0.2`
 **License:** Public Domain
 
 ---
