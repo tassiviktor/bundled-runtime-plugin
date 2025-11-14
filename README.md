@@ -28,7 +28,7 @@ plugins {
   id 'java'
   id 'org.springframework.boot' version '3.3.4' apply false
   id 'org.springframework.boot.aot' apply false                      //Optional, for AOT support
-  id 'hu.tassiviktor.gradle.plugins.bundled-runtime' version '1.0.2'
+  id 'hu.tassiviktor.gradle.plugins.bundled-runtime' version '1.0.3'
 }
 
 apply plugin: 'org.springframework.boot' // only if Spring Boot
@@ -158,7 +158,7 @@ CMD ["./bin/run"]
 
 **Author:** [Viktor Tassi](https://github.com/tassiviktor)
 **Group ID:** `hu.tassiviktor.gradle.plugins.bundled-runtime`
-**Version:** `1.0.2`
+**Version:** `1.0.3`
 **License:** Public Domain
 
 ---
