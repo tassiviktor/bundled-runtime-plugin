@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.jar.JarFile;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Gradle task that runs {@code jlink} to produce a minimized custom runtime image.
@@ -77,7 +78,11 @@ public abstract class MakeRuntimeTask extends DefaultTask {
 
         // --- Modules (auto-detect vs manual) ---
         final boolean autodetect = Boolean.TRUE.equals(getAutoDetectModules().get());
-        final List<String> modulesToUse = autodetect ? autoDetectModules() : getModules().get();
+        final List<String> modulesToUse = autodetect
+                ? Stream.concat(autoDetectModules().stream(), getModules().get().stream())
+                .distinct()
+                .toList()
+                : getModules().get();
 
         // --- Run jlink ---
         File jlink = Utils.jlinkExecutable(getProject());
@@ -152,55 +157,77 @@ public abstract class MakeRuntimeTask extends DefaultTask {
             }
         }
 
-        // Prepare jdeps call
-        File jdeps = Utils.jdepsExecutable(getProject());
-        List<String> args = new ArrayList<>();
-        args.add("--ignore-missing-deps");
-        // Reasonable default; can be made configurable later if needed.
-        args.add("--multi-release"); args.add("21");
-        if (!classpath.isEmpty()) { args.add("-cp"); args.add(classpath); }
-        args.add("--print-module-deps");
-        args.add(appJar.getAbsolutePath());
+        // Temp dir for extracting nested JARs
+        File nestedTempDir = new File(appRoot, ".jdeps-nested");
+        // Cleanup
+        ModuleDetectionUtils.deleteRecursively(nestedTempDir.toPath());
 
-        ExecOutcome jdepsOutcome = execCapture(jdeps.getAbsolutePath(), args);
-        if (jdepsOutcome.exit != 0) {
-            throw new GradleException("jdeps failed (exit=" + jdepsOutcome.exit + ")\nSTDOUT:\n" +
-                    jdepsOutcome.stdout + "\nSTDERR:\n" + jdepsOutcome.stderr);
-        }
+        List<File> nestedJars = Collections.emptyList();
+        try {
+            nestedJars = ModuleDetectionUtils.extractNestedJars(appJar, nestedTempDir, getLogger());
 
-        // Parse comma-separated module list
-        Set<String> modules = new LinkedHashSet<>();
-        String line = jdepsOutcome.stdout.trim();
-        if (!line.isEmpty()) {
-            Arrays.stream(line.split(","))
-                    .map(String::trim)
-                    .filter(s -> !s.isEmpty())
-                    .forEach(modules::add);
-        }
-
-        // Pragmatic defaults
-        modules.add("jdk.crypto.ec");
-
-        // Spring Boot detection: property wins; otherwise inspect the JAR.
-        boolean isBoot = Boolean.TRUE.equals(getSpringBootProject().get());
-        if (!isBoot && appJar.isFile()) {
-            try (JarFile jf = new JarFile(appJar)) {
-                isBoot =
-                        jf.getEntry("org/springframework/boot/SpringApplication.class") != null ||
-                                jf.getEntry("org/springframework/boot/loader/launch/Launcher.class") != null ||
-                                jf.getEntry("org/springframework/boot/loader/JarLauncher.class") != null;
-            } catch (IOException ignored) {
-                // If unreadable, don't decide based on JAR contents.
+            File jdeps = Utils.jdepsExecutable(getProject());
+            List<String> args = new ArrayList<>();
+            args.add("--ignore-missing-deps");
+            // Reasonable default; can be made configurable later if needed.
+            args.add("--multi-release");
+            args.add("21");
+            if (!classpath.isEmpty()) {
+                args.add("-cp");
+                args.add(classpath);
             }
-        }
-        if (isBoot) {
-            // Needed due to java.beans.PropertyEditorSupport usages in some Boot setups.
-            modules.add("java.desktop");
-        }
+            args.add("--print-module-deps");
 
-        getLogger().lifecycle("[autoDetectModules] {}", modules);
-        return new ArrayList<>(modules);
+            // Walk through nested jars...
+            args.add(appJar.getAbsolutePath());
+            for (File nested : nestedJars) {
+                args.add(nested.getAbsolutePath());
+            }
+
+            ExecOutcome jdepsOutcome = execCapture(jdeps.getAbsolutePath(), args);
+            if (jdepsOutcome.exit != 0) {
+                throw new GradleException("jdeps failed (exit=" + jdepsOutcome.exit + ")\nSTDOUT:\n" +
+                        jdepsOutcome.stdout + "\nSTDERR:\n" + jdepsOutcome.stderr);
+            }
+
+            // Parse comma-separated module list
+            Set<String> modules = new LinkedHashSet<>();
+            String line = jdepsOutcome.stdout.trim();
+            if (!line.isEmpty()) {
+                Arrays.stream(line.split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .forEach(modules::add);
+            }
+
+            // Pragmatic defaults
+            modules.add("jdk.crypto.ec");
+
+            // Spring Boot detection: property wins; otherwise inspect the JAR.
+            boolean isBoot = Boolean.TRUE.equals(getSpringBootProject().get());
+            if (!isBoot && appJar.isFile()) {
+                try (JarFile jf = new JarFile(appJar)) {
+                    isBoot =
+                            jf.getEntry("org/springframework/boot/SpringApplication.class") != null ||
+                                    jf.getEntry("org/springframework/boot/loader/launch/Launcher.class") != null ||
+                                    jf.getEntry("org/springframework/boot/loader/JarLauncher.class") != null;
+                } catch (IOException ignored) {
+                    // If unreadable, don't decide based on JAR contents.
+                }
+            }
+            if (isBoot) {
+                // Needed due to java.beans.PropertyEditorSupport usages in some Boot setups.
+                modules.add("java.desktop");
+            }
+
+            getLogger().lifecycle("[autoDetectModules] {}", modules);
+            return new ArrayList<>(modules);
+        } finally {
+            // best-effort cleanup
+            ModuleDetectionUtils.deleteRecursively(nestedTempDir.toPath());
+        }
     }
+
 
     /**
      * Execute an external tool and capture exit code, STDOUT and STDERR.
